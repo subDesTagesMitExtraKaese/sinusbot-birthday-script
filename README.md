@@ -1,4 +1,4 @@
-# sinousbot-birthday-script
+# sinusbot-birthday-script
 Birthday notifications for SinusBot
 
 Sends private message or pokes users on join when someone had birthday.
