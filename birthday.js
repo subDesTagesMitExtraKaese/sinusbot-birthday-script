@@ -22,6 +22,11 @@ registerPlugin({
       name: 'nDays',
       title: 'send the notification upto this amount of days after birthday',
       type: 'number'
+    },
+    {
+      name: 'serverGroup',
+      title: 'Server group name/id for birthdays',
+      type: 'string'
     }
   ],
   autorun: true
@@ -43,6 +48,8 @@ registerPlugin({
     let bDays = store.get('birthdays') || {};
     let notifs = store.get('birthday_notifications') || {};
 
+    setInterval(updateServerGroups, 1000 * 60);
+
     event.on('clientMove', ({ client, fromChannel }) => {
       const avail = getNotifications(client, 30);
       if (avail.length < 1)
@@ -59,6 +66,7 @@ registerPlugin({
         } else {
           client.poke(msg)
         }
+        updateServerGroups();
       }
     })
 
@@ -151,6 +159,27 @@ registerPlugin({
         return `${dt.getDate()}.${dt.getMonth()+1}.`;
       else
         return 'invalid date';
+    }
+
+    function updateServerGroups() {
+      if(config.serverGroup === "")
+        return;
+      const now = new Date();
+      for(const client of backend.getClients()) {
+        if(bDays[client.uid()]) {
+          const bDay = new Date(bDays[client.uid()][1]);
+          let hasGroup = false;
+          for(const group of client.getServerGroups()) {
+            hasGroup |= group.name() === config.serverGroup || group.id() == config.serverGroup;
+          }
+
+          if(bDay.getDate() === now.getDate() && bDay.getMonth() === now.getMonth()) {
+            if(!hasGroup) client.addToServerGroup(config.serverGroup);
+          } else {
+            if(hasGroup) client.removeFromServerGroup(config.serverGroup);
+          }
+        }
+      }
     }
   });
 });
