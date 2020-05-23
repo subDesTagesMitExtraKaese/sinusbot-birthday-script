@@ -1,0 +1,6 @@
+[submodule "dav-client"]
+	path = dav-client
+	url = https://github.com/lambdabaa/dav
+[submodule "vcard-parser"]
+	path = vcard-parser
+	url = https://github.com/nilclass/vcardjs

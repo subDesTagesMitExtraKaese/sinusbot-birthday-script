@@ -27,6 +27,26 @@ registerPlugin({
       name: 'serverGroup',
       title: 'Server group name/id for birthdays',
       type: 'string'
+    },
+    {
+      name: 'davUrl',
+      title: 'CardDAV URL e.g. https://example.com/dav.php',
+      type: 'string'
+    },
+    {
+      name: 'davUsername',
+      title: 'CardDAV username',
+      type: 'string'
+    },
+    {
+      name: 'davPassword',
+      title: 'CardDAV password',
+      type: 'password'
+    },
+    {
+      name: 'davAddressBook',
+      title: 'CardDAV address book',
+      type: 'text'
     }
   ],
   autorun: true
@@ -45,10 +65,36 @@ registerPlugin({
         engine.log('command.js library not found! Please download command.js and enable it to be able use this script!');
         return;
     }
+
+    var xhr = new dav.transport.Basic(
+      new dav.Credentials({
+        username: config.davUsername,
+        password: config.davPassword
+      })
+    );
+    
+    
     let bDays = store.get('birthdays') || {};
     let notifs = store.get('birthday_notifications') || {};
+    
+    let davClient = new dav.Client(xhr);
+    let usedAddressBook = null;
+
+    davClient.createAccount({
+      server: config.davUrl,
+      accountType: 'carddav'
+    }).then(function(account) {
+      let addressBook = null;
+      account.addressBooks.forEach(function(ab) {
+        console.log('Found address book name ' + ab.displayName);
+        addressBook = ab;
+        if(ab.displayName === config.davAddressBook) return;
+      });
+      usedAddressBook = addressBook;
+    });
 
     setInterval(updateServerGroups, 1000 * 60);
+    setInterval(syncDavAddressBook, 1000 * 60);
 
     event.on('clientMove', ({ client, fromChannel }) => {
       const avail = getNotifications(client, 30);
@@ -115,22 +161,20 @@ registerPlugin({
       if(isNaN(date) && bDays[client.uid()]) {
         delete bDays[client.uid()];
       } else if(!isNaN(date)) {
-        bDays[client.uid()] = [client.name(), date];
+        bDays[client.uid()] = [client.name(), date, new Date()];
       }
       store.set('birthdays', bDays);
     }
     function getBday(uid) {
       if(!bDays[uid])
         return undefined;
-      let [name, date] = bDays[uid];
-      if(date)
-        return new Date(date);
+      if(bDays[uid][1])
+        return new Date(bDays[uid][1]);
       else
         return undefined;
     }
     function getName(uid) {
-      let [name, date] = bDays[uid];
-      return name;
+      return bDays[uid][0];
     }
 
     function getNotifications(client, nDays = 30) {
@@ -181,5 +225,74 @@ registerPlugin({
         }
       }
     }
+    function syncDavAddressBook() {
+      if(!usedAddressBook)
+        return;
+      
+      davClient.syncAddressBook(usedAddressBook).then(function(x) {
+        let remoteBDays = {};
+        let hasUpdates = false;
+
+        for(const vcard of x.objects) {
+          VCF.parse(vcard.addressData, function(card) {
+            if(!isnan(card.bday) && card.note && card.note.length > 0) {
+              const uid = card.note[0]
+              remoteBDays[uid] = [card.fn, card.bday, card.rev];
+              if(!bDays[uid]) {
+                //create local
+                engine.log('new birthday from dav')
+                bDays[uid] = remoteBDays[uid];
+              } else if(bDays[uid].count < 3 || bDays[uid][2] < card.rev) {
+                //pull from dav
+                engine.log('updated birthday from dav')
+                bDays[uid] = remoteBDays[uid];
+                hasUpdates = true;
+              } else if(bDays[uid][2] > card.rev) {
+                //push to dav
+                engine.log('synced birthday to dav')
+                card.fn = bDays[uid][0];
+                card.bday = bDays[uid][1];
+                card.rev = bDays[uid][2];
+                card.validate();
+                vcard.addressData = vCardToString(card);
+                davClient.updateCard(cards[uid]);
+              }
+            }
+          })
+        }
+        //create in dav
+        for(const uid in bDays) {
+          if(!remoteBDays[uid] && bDays[uid][1]) {
+            engine.log('created birthday in dav')
+            const card = new VCard({
+              fn: bDays[uid][0], 
+              bday: new Date(bDays[uid][1]), 
+              rev: bDays[uid].length > 2 ? bDays[uid][2] : new Date(), 
+              note: uid});
+            card.validate();
+            davClient.createCard(usedAddressBook, {
+              data: vCardToString(card),
+              filename: `${card.uid}.vcf`,
+              xhr: xhr
+            });
+            remoteBDays[uid] = bDays[uid];
+          }
+        }
+      })
+    }
   });
 });
+
+function vCardToString(vCard) {
+  return `BEGIN:VCARD
+  VERSION:3.0
+  UID:${vCard.uid}
+  N:;${vCard.fn};;;
+  FN:${vCard.fn}
+  NOTE:${vCard.note && vCard.note[0] ? vCard.note[0] : ""}
+  REV:${(vCard.rev instanceof Date ? vCard.rev.toISOString().replace(/[-:]|\.000/g, '') : vCard.rev)}
+  BDAY;VALUE=date:${vCard.bday.toISOString().substring(0, 10).replace(/-/g, '')}
+  PRODID:-//birthday-script//EN
+  END:VCARD
+  `;
+  }
