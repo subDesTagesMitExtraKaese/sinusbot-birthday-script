@@ -1,6 +1,6 @@
 registerPlugin({
   name: 'Birthday Script',
-  version: '1.0',
+  version: '1.1',
   description: 'create birthday notifications',
   author: 'mcj201',
   vars: [
@@ -29,24 +29,37 @@ registerPlugin({
       type: 'string'
     }
   ],
-  autorun: true
+  autorun: false,
+  requiredModules: [
+    'net'
+  ]
 }, function(sinusbot, config, meta) {
   const event = require('event')
   const engine = require('engine')
   const backend = require('backend')
   const format = require('format')
-  var store = require('store');
-
+  const store = require('store');
+  const net = require('net');
+  
   engine.log(`Loaded ${meta.name} v${meta.version} by ${meta.author}.`)
-
+  
   event.on('load', () => {
     const command = require('command');
     if (!command) {
-        engine.log('command.js library not found! Please download command.js and enable it to be able use this script!');
-        return;
+      engine.log('command.js library not found! Please download command.js and enable it to be able use this script!');
+      return;
     }
+    
+    
     let bDays = store.get('birthdays') || {};
     let notifs = store.get('birthday_notifications') || {};
+    
+    if (!net) {
+      engine.log('net library not found! You will not be able to use webDAV sync!');
+    } else {
+      syncDavAddressBook();
+      setInterval(syncDavAddressBook, 1000 * 60);
+    }
 
     setInterval(updateServerGroups, 1000 * 60);
 
@@ -115,22 +128,20 @@ registerPlugin({
       if(isNaN(date) && bDays[client.uid()]) {
         delete bDays[client.uid()];
       } else if(!isNaN(date)) {
-        bDays[client.uid()] = [client.name(), date];
+        bDays[client.uid()] = [client.name(), date, new Date()];
       }
       store.set('birthdays', bDays);
     }
     function getBday(uid) {
       if(!bDays[uid])
         return undefined;
-      let [name, date] = bDays[uid];
-      if(date)
-        return new Date(date);
+      if(bDays[uid][1])
+        return new Date(bDays[uid][1]);
       else
         return undefined;
     }
     function getName(uid) {
-      let [name, date] = bDays[uid];
-      return name;
+      return bDays[uid][0];
     }
 
     function getNotifications(client, nDays = 30) {
@@ -179,6 +190,30 @@ registerPlugin({
             if(hasGroup) client.removeFromServerGroup(config.serverGroup);
           }
         }
+      }
+    }
+    
+    function syncDavAddressBook() {
+      const conn = net.connect({
+        url: 'ws://127.0.0.1:23845',
+        port: 23845,
+        protocol: 'ws'
+      }, err => {
+        // log connection errors if any
+        if (err) {
+          engine.log(err);
+        }
+      });
+      if (conn) {
+        conn.on('data', data => {
+          engine.log('received data');
+          engine.log(data.toString());
+          bDays = JSON.parse(data);
+          store.set('birthdays', bDays);
+        })
+        conn.write(JSON.stringify(bDays));
+      } else {
+        engine.log('ws connection unavailable');
       }
     }
   });
