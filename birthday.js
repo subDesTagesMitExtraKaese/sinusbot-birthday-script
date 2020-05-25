@@ -1,6 +1,6 @@
 registerPlugin({
   name: 'Birthday Script',
-  version: '1.0',
+  version: '1.1',
   description: 'create birthday notifications',
   author: 'mcj201',
   vars: [
@@ -27,74 +27,41 @@ registerPlugin({
       name: 'serverGroup',
       title: 'Server group name/id for birthdays',
       type: 'string'
-    },
-    {
-      name: 'davUrl',
-      title: 'CardDAV URL e.g. https://example.com/dav.php',
-      type: 'string'
-    },
-    {
-      name: 'davUsername',
-      title: 'CardDAV username',
-      type: 'string'
-    },
-    {
-      name: 'davPassword',
-      title: 'CardDAV password',
-      type: 'password'
-    },
-    {
-      name: 'davAddressBook',
-      title: 'CardDAV address book',
-      type: 'text'
     }
   ],
-  autorun: true
+  autorun: false,
+  requiredModules: [
+    'net'
+  ]
 }, function(sinusbot, config, meta) {
   const event = require('event')
   const engine = require('engine')
   const backend = require('backend')
   const format = require('format')
-  var store = require('store');
-
+  const store = require('store');
+  const net = require('net');
+  
   engine.log(`Loaded ${meta.name} v${meta.version} by ${meta.author}.`)
-
+  
   event.on('load', () => {
     const command = require('command');
     if (!command) {
-        engine.log('command.js library not found! Please download command.js and enable it to be able use this script!');
-        return;
+      engine.log('command.js library not found! Please download command.js and enable it to be able use this script!');
+      return;
     }
-
-    var xhr = new dav.transport.Basic(
-      new dav.Credentials({
-        username: config.davUsername,
-        password: config.davPassword
-      })
-    );
     
     
     let bDays = store.get('birthdays') || {};
     let notifs = store.get('birthday_notifications') || {};
     
-    let davClient = new dav.Client(xhr);
-    let usedAddressBook = null;
-
-    davClient.createAccount({
-      server: config.davUrl,
-      accountType: 'carddav'
-    }).then(function(account) {
-      let addressBook = null;
-      account.addressBooks.forEach(function(ab) {
-        console.log('Found address book name ' + ab.displayName);
-        addressBook = ab;
-        if(ab.displayName === config.davAddressBook) return;
-      });
-      usedAddressBook = addressBook;
-    });
+    if (!net) {
+      engine.log('net library not found! You will not be able to use webDAV sync!');
+    } else {
+      syncDavAddressBook();
+      setInterval(syncDavAddressBook, 1000 * 60);
+    }
 
     setInterval(updateServerGroups, 1000 * 60);
-    setInterval(syncDavAddressBook, 1000 * 60);
 
     event.on('clientMove', ({ client, fromChannel }) => {
       const avail = getNotifications(client, 30);
@@ -225,74 +192,29 @@ registerPlugin({
         }
       }
     }
+    
     function syncDavAddressBook() {
-      if(!usedAddressBook)
-        return;
-      
-      davClient.syncAddressBook(usedAddressBook).then(function(x) {
-        let remoteBDays = {};
-        let hasUpdates = false;
-
-        for(const vcard of x.objects) {
-          VCF.parse(vcard.addressData, function(card) {
-            if(!isnan(card.bday) && card.note && card.note.length > 0) {
-              const uid = card.note[0]
-              remoteBDays[uid] = [card.fn, card.bday, card.rev];
-              if(!bDays[uid]) {
-                //create local
-                engine.log('new birthday from dav')
-                bDays[uid] = remoteBDays[uid];
-              } else if(bDays[uid].count < 3 || bDays[uid][2] < card.rev) {
-                //pull from dav
-                engine.log('updated birthday from dav')
-                bDays[uid] = remoteBDays[uid];
-                hasUpdates = true;
-              } else if(bDays[uid][2] > card.rev) {
-                //push to dav
-                engine.log('synced birthday to dav')
-                card.fn = bDays[uid][0];
-                card.bday = bDays[uid][1];
-                card.rev = bDays[uid][2];
-                card.validate();
-                vcard.addressData = vCardToString(card);
-                davClient.updateCard(cards[uid]);
-              }
-            }
-          })
+      const conn = net.connect({
+        url: 'ws://127.0.0.1:23845',
+        port: 23845,
+        protocol: 'ws'
+      }, err => {
+        // log connection errors if any
+        if (err) {
+          engine.log(err);
         }
-        //create in dav
-        for(const uid in bDays) {
-          if(!remoteBDays[uid] && bDays[uid][1]) {
-            engine.log('created birthday in dav')
-            const card = new VCard({
-              fn: bDays[uid][0], 
-              bday: new Date(bDays[uid][1]), 
-              rev: bDays[uid].length > 2 ? bDays[uid][2] : new Date(), 
-              note: uid});
-            card.validate();
-            davClient.createCard(usedAddressBook, {
-              data: vCardToString(card),
-              filename: `${card.uid}.vcf`,
-              xhr: xhr
-            });
-            remoteBDays[uid] = bDays[uid];
-          }
-        }
-      })
+      });
+      if (conn) {
+        conn.on('data', data => {
+          engine.log('received data');
+          engine.log(data.toString());
+          bDays = JSON.parse(data);
+          store.set('birthdays', bDays);
+        })
+        conn.write(JSON.stringify(bDays));
+      } else {
+        engine.log('ws connection unavailable');
+      }
     }
   });
 });
-
-function vCardToString(vCard) {
-  return `BEGIN:VCARD
-  VERSION:3.0
-  UID:${vCard.uid}
-  N:;${vCard.fn};;;
-  FN:${vCard.fn}
-  NOTE:${vCard.note && vCard.note[0] ? vCard.note[0] : ""}
-  REV:${(vCard.rev instanceof Date ? vCard.rev.toISOString().replace(/[-:]|\.000/g, '') : vCard.rev)}
-  BDAY;VALUE=date:${vCard.bday.toISOString().substring(0, 10).replace(/-/g, '')}
-  PRODID:-//birthday-script//EN
-  END:VCARD
-  `;
-  }

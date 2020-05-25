@@ -1,2 +1,4 @@
 /dav-client
 /vcard-parser
+*.txt
+secrets.js
