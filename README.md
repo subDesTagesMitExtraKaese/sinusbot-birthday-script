@@ -41,7 +41,7 @@ They communicate via `ws://127.0.0.1:23845`, so the DAV program has to run on th
 
 1. Download `ws-server.js` and `node_modules` into a seperate folder.
 ```bash
-git clone https://github.com/subDesTagesMitExtraKaese/sinusbot-birthday-script/tree/dav-test
+git clone https://github.com/subDesTagesMitExtraKaese/sinusbot-birthday-script
 cd sinusbot-birthday-script
 ```
 
